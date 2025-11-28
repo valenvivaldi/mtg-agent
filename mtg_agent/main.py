@@ -1,12 +1,10 @@
 import os  
 from pathlib import Path
 import uuid
-from langchain.chat_models import init_chat_model  
-from langgraph.prebuilt import create_react_agent  
-from langgraph.store.memory import InMemoryStore  
-from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.messages import HumanMessage, SystemMessage
+import sys
 
+from langchain.agents import create_agent
+from langchain.chat_models import init_chat_model
 # Import deck tools
 from mtg_agent.deck_tools import modify_deck_card, view_deck, get_deck_stats, get_card_info, refresh_card_cache
 from mtg_agent.scryfall_integration import mana_curve_calculator, scryfall_cache
@@ -147,33 +145,40 @@ Importante: cuando muestres el valor de maná (CMC) o la curva de maná, represe
 
 Usa estos emojis siempre que menciones costos de maná o distribuciones por CMC. Incluye un pequeño resumen con emojis en la parte superior de la sección de curva de maná para que sea fácil de leer."""  
   
-# Function to get the model  
-def get_llm(model, provider, temperature):  
-    llm = init_chat_model(  
-        model_provider=provider,   
-        model=model,   
-        temperature=temperature  
-    )  
-    return llm  
-  
-# Initialize the model  
-llm = get_llm(model="gpt-5-mini", provider="openai", temperature=1)  
-  
-# Create store to maintain history  
-store = InMemoryStore()  
-  
-# Create checkpointer to persist state  
-memory = MemorySaver()  
-  
-# Conversation ID  
-conversation_id = str(uuid.uuid4())
+
+
+
+def _initialize_agent_resources():
+    """Initialize LLM and langgraph resources when running CLI mode."""
+    from langgraph.store.memory import InMemoryStore
+    from langgraph.checkpoint.memory import MemorySaver
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    store = InMemoryStore()
+    memory = MemorySaver()
+    conversation_id = str(uuid.uuid4())
+    return {
+        'store': store,
+        'memory': memory,
+        'HumanMessage': HumanMessage,
+        'SystemMessage': SystemMessage,
+        'conversation_id': conversation_id,
+    }
   
 print("React Agent with Store - Type 'exit' to quit\n")  
 
 def main():
-    while True:  
+    # Initialize heavy resources for CLI agent
+    resources = _initialize_agent_resources()
+    store = resources['store']
+    memory = resources['memory']
+    HumanMessage = resources['HumanMessage']
+    SystemMessage = resources['SystemMessage']
+    conversation_id = resources['conversation_id']
+
+    while True:
         try:
-            user_input = input("You: ")  
+            user_input = input("You: ")
               
             if user_input.lower() in ['salir', 'exit', 'quit']:  
                 print("Goodbye!")  
@@ -185,24 +190,30 @@ def main():
             # Build system message that includes the deck state (so the agent receives it as system prompt)
             system_msg = SystemMessage(content=SYSTEM_PROMPT + "\n\n--- CURRENT DECK STATE ---\n" + deck_info)
 
-            # Configuration with thread_id to maintain history  
-            config = {  
-                "configurable": {"thread_id": conversation_id}  
-            }  
-            
-            agent = create_react_agent(  
-                model=llm,  
+            # Configuration with thread_id to maintain history
+            config = {
+                "configurable": {"thread_id": conversation_id}
+            }
+
+
+            llm = init_chat_model(
+                model_provider="openai",
+                model="gpt-5-mini",
+                base_url=os.getenv("PROXY_URL", None)
+            )
+            agent = create_agent(
+                model=llm,
                 tools=[modify_deck_card, view_deck, get_deck_stats, get_card_info, refresh_card_cache],
-                prompt=system_msg.content,
+                system_prompt=system_msg.content,
                 checkpointer=memory,
-                store=store
+                store=store,
             )
 
             # Invoke agent with system message first, then the user message
-            response = agent.invoke(  
-                {"messages": [system_msg, HumanMessage(content=user_input)]},  
-                config=config  
-            )  
+            response = agent.invoke(
+                {"messages": [system_msg, HumanMessage(content=user_input)]},
+                config=config,
+            )
               
             # Get response  
             assistant_message = response["messages"][-1]  

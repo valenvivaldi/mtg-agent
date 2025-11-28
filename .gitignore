@@ -38,3 +38,15 @@ image_cache/*
 # Lock / metadata files (optional to ignore)
 uv.lock
 *.lock
+.idea/.gitignore
+.idea/copilot.data.migration.agent.xml
+.idea/copilot.data.migration.ask.xml
+.idea/copilot.data.migration.ask2agent.xml
+.idea/copilot.data.migration.edit.xml
+.idea/copilotDiffState.xml
+.idea/misc.xml
+.idea/modules.xml
+.idea/mtg-agent.iml
+.idea/vcs.xml
+.idea/inspectionProfiles/profiles_settings.xml
+.idea/inspectionProfiles/Project_Default.xml

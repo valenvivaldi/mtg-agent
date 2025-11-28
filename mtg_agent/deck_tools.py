@@ -1,10 +1,12 @@
 """
 Tools for manipulating Magic: The Gathering decks
 """
-import os
 from pathlib import Path
 from langchain_core.tools import tool
 from .scryfall_integration import scryfall_cache
+import logging
+
+logger = logging.getLogger("mtg_agent.deck_tools")
 
 # Constant for the deck filename
 DECK_FILENAME = "deck.txt"
@@ -39,6 +41,7 @@ def _parse_card_line(line: str):
     try:
         quantity = int(parts[0])
         card_name = parts[1]
+        logger.info(f"📗 Leyendo carta: {quantity}x {card_name}")
         return quantity, card_name
     except ValueError:
         return None
@@ -90,7 +93,8 @@ def _process_deck_modification(deck_lines, card_name: str, quantity_change: int)
     """Process the modification of a card in the deck"""
     new_lines = []
     card_found = False
-    
+    result_msg = None
+
     for line in deck_lines:
         if not line.strip():
             new_lines.append(line)
@@ -201,6 +205,7 @@ def get_card_info(card_name: str) -> str:
         Detailed card information or error message
     """
     try:
+        logger.info(f"🔎 Solicitando información de la carta: {card_name}")
         card_info = scryfall_cache.get_card_info(card_name)
         
         if not card_info:
@@ -336,3 +341,38 @@ def _format_deck_stats(stats):
         result += "\n✅ All cards (except basic lands) are singleton\n"
     
     return result
+
+
+@tool
+def download_deck_images(dest_dir: str | None = None) -> str:
+    """
+    Descargar las imágenes de todas las cartas del mazo al directorio de caché de imágenes.
+    Usa `scryfall_cache.download_card_image` (que ya registra cuando descarga/usa caché).
+    """
+    try:
+        lines = _read_deck_lines()
+        downloaded = 0
+        failed = []
+        seen = set()
+
+        for line in lines:
+            parsed = _parse_card_line(line)
+            if not parsed:
+                continue
+            _, card_name = parsed
+            if card_name in seen:
+                continue
+            seen.add(card_name)
+            # Intentamos descargar una vez por nombre (no por cantidad)
+            path = scryfall_cache.download_card_image(card_name, dest_dir)
+            if path:
+                downloaded += 1
+            else:
+                failed.append(card_name)
+
+        summary = f"✅ Imágenes procesadas: {downloaded}. Fallos: {len(failed)}"
+        if failed:
+            summary += "\nCartas fallidas: " + ", ".join(sorted(set(failed))[:10])
+        return summary
+    except Exception as e:
+        return f"❌ Error descargando imágenes del mazo: {e}"

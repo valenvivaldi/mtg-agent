@@ -7,6 +7,11 @@ import time
 from pathlib import Path
 from typing import Dict, Optional, List, Union
 import hashlib
+import logging
+
+# Configure basic logging for the package so INFO messages are visible by default
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("mtg_agent.scryfall")
 
 
 class ScryfallCache:
@@ -43,10 +48,12 @@ class ScryfallCache:
         if cache_file.exists():
             try:
                 with open(cache_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    data = json.load(f)
+                logger.info(f"📥 Cargado desde caché: {card_name} -> {cache_file}")
+                return data
             except Exception as e:
-                print(f"⚠️ Error reading cache for {card_name}: {e}")
-        
+                logger.warning(f"⚠️ Error reading cache for {card_name}: {e}")
+
         # If not in cache, make request to Scryfall
         return self._fetch_from_scryfall(card_name, cache_file)
     
@@ -65,22 +72,26 @@ class ScryfallCache:
                 card_data = response.json()
                 
                 # Save to cache
-                with open(cache_file, 'w', encoding='utf-8') as f:
-                    json.dump(card_data, f, indent=2, ensure_ascii=False)
-                
-                print(f"✅ Retrieved information from Scryfall: {card_name}")
+                try:
+                    with open(cache_file, 'w', encoding='utf-8') as f:
+                        json.dump(card_data, f, indent=2, ensure_ascii=False)
+                    logger.info(f"💾 Guardado en caché: {cache_file}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Error guardando caché para {card_name}: {e}")
+
+                logger.info(f"✅ Retrieved information from Scryfall: {card_name} (cached: {cache_file})")
                 return card_data
             
             elif response.status_code == 404:
-                print(f"⚠️ Card not found in Scryfall: {card_name}")
+                logger.warning(f"⚠️ Card not found in Scryfall: {card_name}")
                 return None
             
             else:
-                print(f"❌ Error {response.status_code} getting {card_name}: {response.text}")
+                logger.error(f"❌ Error {response.status_code} getting {card_name}: {response.text}")
                 return None
                 
         except Exception as e:
-            print(f"❌ Connection error getting {card_name}: {e}")
+            logger.error(f"❌ Connection error getting {card_name}: {e}")
             return None
     
     def get_mana_cost(self, card_name: str) -> Optional[str]:
@@ -103,6 +114,65 @@ class ScryfallCache:
         if card_info:
             return card_info.get('type_line', '')
         return None
+
+    def download_card_image(self, card_name: str, dest_dir: str | None = None) -> Optional[Path]:
+        """Download the card image for a card and save it to an image cache directory.
+
+        This method will look for image URIs in the card JSON (single-faced or multi-faced cards)
+        and attempt to download the first available image. It will not overwrite existing files.
+        Returns the Path to the saved image or None on failure.
+        """
+        card_info = self.get_card_info(card_name)
+        if not card_info:
+            logger.error(f"❌ No se puede descargar imagen - no hay información de la carta: {card_name}")
+            return None
+
+        image_uri = None
+        # Single-faced card
+        if isinstance(card_info.get('image_uris'), dict):
+            image_uris = card_info['image_uris']
+            # Prefer large, then normal, then png, else first
+            image_uri = image_uris.get('large') or image_uris.get('normal') or image_uris.get('png') or next(iter(image_uris.values()))
+        # Multi-faced card
+        elif isinstance(card_info.get('card_faces'), list):
+            for face in card_info['card_faces']:
+                if isinstance(face.get('image_uris'), dict):
+                    image_uris = face['image_uris']
+                    image_uri = image_uris.get('large') or image_uris.get('normal') or image_uris.get('png')
+                    if image_uri:
+                        break
+
+        if not image_uri:
+            logger.warning(f"⚠️ No se encontró imagen para: {card_name}")
+            return None
+
+        dest_dir_path = Path(__file__).parent.parent / (dest_dir or 'image_cache')
+        dest_dir_path.mkdir(exist_ok=True)
+
+        # Create a safe filename using the card name
+        ext = Path(image_uri.split('?')[0]).suffix or '.png'
+        safe_name = "".join(c for c in card_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        filename = dest_dir_path / f"{safe_name}{ext}"
+
+        if filename.exists():
+            logger.info(f"🖼️ Imagen ya en caché: {filename}")
+            return filename
+
+        try:
+            logger.info(f"⬇️ Descargando imagen: {card_name} -> {filename}")
+            resp = self.session.get(image_uri, stream=True, timeout=15)
+            if resp.status_code == 200:
+                with open(filename, 'wb') as f:
+                    for chunk in resp.iter_content(1024):
+                        f.write(chunk)
+                logger.info(f"💾 Imagen guardada: {filename}")
+                return filename
+            else:
+                logger.error(f"❌ Error descargando imagen ({resp.status_code}): {image_uri}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ Excepción descargando imagen {card_name}: {e}")
+            return None
 
 
 class ManaCurveCalculator:
@@ -179,7 +249,7 @@ class ManaCurveCalculator:
             with open(path, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception as e:
-            print(f"⚠️ Error reading mana curve cache {path}: {e}")
+            logger.warning(f"⚠️ Error reading mana curve cache {path}: {e}")
             return None
 
     def _save_cached_curve(self, deck_hash: str, data: Dict):
@@ -188,9 +258,10 @@ class ManaCurveCalculator:
         try:
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
+            logger.info(f"💾 Mana curve guardada en caché: {path}")
         except Exception as e:
-            print(f"⚠️ Error saving mana curve cache {path}: {e}")
-    
+            logger.warning(f"⚠️ Error saving mana curve cache {path}: {e}")
+
     def _process_deck_line(self, line: str, is_last_line: bool):
         """Process a deck line and return basic data"""
         line = line.strip()
